@@ -68,8 +68,11 @@ class OHEditor:
                 raise EditorToolParameterMissingError(command, 'file_text')
             self.write_file(_path, file_text)
             # Save initial content to history
-            history_path = self._history_dir / f"{_path.name}.{len(self._file_history[_path])}.bak"
+            history_path = (
+                self._history_dir / f'{_path.name}.{len(self._file_history[_path])}.bak'
+            )
             from shutil import copy2
+
             copy2(_path, history_path)
             self._file_history[_path].append(history_path)
             return CLIResult(
@@ -107,8 +110,12 @@ class OHEditor:
         """
         Implement the str_replace command, which replaces old_str with new_str in the file content.
         """
-        from .file_utils import find_string_in_file, replace_string_in_file, get_file_lines
-        
+        from .file_utils import (
+            find_string_in_file,
+            get_file_lines,
+            replace_string_in_file,
+        )
+
         old_str = old_str.expandtabs()
         new_str = new_str.expandtabs() if new_str is not None else ''
 
@@ -130,8 +137,11 @@ class OHEditor:
             )
 
         # Save current content to history
-        history_path = self._history_dir / f"{path.name}.{len(self._file_history[path])}.bak"
+        history_path = (
+            self._history_dir / f'{path.name}.{len(self._file_history[path])}.bak'
+        )
         from shutil import copy2
+
         copy2(path, history_path)
         self._file_history[path].append(history_path)
 
@@ -139,7 +149,7 @@ class OHEditor:
         replacement_line = line_numbers[0]
         start_line = max(1, replacement_line - SNIPPET_CONTEXT_WINDOW)
         end_line = replacement_line + SNIPPET_CONTEXT_WINDOW + new_str.count('\n')
-        
+
         snippet_lines = []
         for line_num, line in get_file_lines(path, start_line, end_line):
             snippet_lines.append(line)
@@ -148,7 +158,8 @@ class OHEditor:
         # Prepare the success message
         success_message = f'The file {path} has been edited. '
         success_message += self._make_output(
-            snippet, f'a snippet of {path}', start_line)
+            snippet, f'a snippet of {path}', start_line
+        )
 
         if enable_linting:
             # Run linting on the changes
@@ -214,7 +225,7 @@ class OHEditor:
         num_lines = 0
         with open(path, 'rb') as f:
             num_lines = sum(1 for _ in f)
-        
+
         if not view_range:
             # Read all lines in chunks
             def read_chunks():
@@ -229,7 +240,7 @@ class OHEditor:
                         chunk_size = 0
                 if chunk_lines:
                     yield '\n'.join(chunk_lines)
-                    
+
             return CLIResult(
                 output=self._make_output(list(read_chunks()), str(path), 1),
                 path=str(path),
@@ -268,8 +279,8 @@ class OHEditor:
         # Read requested lines in chunks
         if end_line == -1:
             end_line = num_lines
-            
-        def read_chunks():
+
+        def read_range_chunks():
             chunk_lines = []
             chunk_size = 0
             for line_num, line in get_file_lines(path, start_line, end_line):
@@ -281,10 +292,10 @@ class OHEditor:
                     chunk_size = 0
             if chunk_lines:
                 yield '\n'.join(chunk_lines)
-                
+
         return CLIResult(
             path=str(path),
-            output=self._make_output(list(read_chunks()), str(path), start_line),
+            output=self._make_output(list(read_range_chunks()), str(path), start_line),
             prev_exist=True,
         )
 
@@ -305,10 +316,10 @@ class OHEditor:
         Implement the insert command, which inserts new_str at the specified line in the file content.
         """
         from .file_utils import get_file_lines
-        
+
         # Get total number of lines first
         num_lines = sum(1 for _ in get_file_lines(path))
-        
+
         if insert_line < 0 or insert_line > num_lines:
             raise EditorToolParameterInvalidError(
                 'insert_line',
@@ -325,29 +336,32 @@ class OHEditor:
                 for line_num, line in get_file_lines(path, end_line=insert_line):
                     out.write(line.expandtabs() + '\n')
                     current_line += 1
-                    
+
                 # Write the new content
                 for line in new_str.expandtabs().split('\n'):
                     out.write(line + '\n')
-                    
+
                 # Write remaining lines
                 for line_num, line in get_file_lines(path, start_line=insert_line + 1):
                     out.write(line.expandtabs() + '\n')
-                    
+
             # Replace original file
             temp_path.replace(path)
-            
+
             # Save current content to history
-            history_path = self._history_dir / f"{path.name}.{len(self._file_history[path])}.bak"
+            history_path = (
+                self._history_dir / f'{path.name}.{len(self._file_history[path])}.bak'
+            )
             from shutil import copy2
+
             copy2(path, history_path)
             self._file_history[path].append(history_path)
-            
+
             # Create snippet for display
             snippet_lines = []
             start_line = max(1, insert_line - SNIPPET_CONTEXT_WINDOW)
             end_line = insert_line + SNIPPET_CONTEXT_WINDOW + len(new_str.split('\n'))
-            
+
             for line_num, line in get_file_lines(path, start_line, end_line):
                 snippet_lines.append(line)
             snippet = '\n'.join(snippet_lines)
@@ -358,7 +372,7 @@ class OHEditor:
                 'a snippet of the edited file',
                 start_line,
             )
-            
+
         finally:
             if temp_path.exists():
                 temp_path.unlink()
@@ -454,18 +468,20 @@ class OHEditor:
         """
         if isinstance(snippet_content, str):
             snippet_content = [snippet_content]
-            
+
         def process_chunks():
             current_line = start_line
             for chunk in snippet_content:
-                chunk = maybe_truncate(chunk, truncate_notice=FILE_CONTENT_TRUNCATED_NOTICE)
+                chunk = maybe_truncate(
+                    chunk, truncate_notice=FILE_CONTENT_TRUNCATED_NOTICE
+                )
                 if expand_tabs:
                     chunk = chunk.expandtabs()
-                    
+
                 for line in chunk.split('\n'):
                     yield f'{current_line:6}\t{line}'
                     current_line += 1
-                    
+
         return (
             f"Here's the result of running `cat -n` on {snippet_description}:\n"
             + '\n'.join(process_chunks())
