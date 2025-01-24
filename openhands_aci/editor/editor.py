@@ -100,67 +100,179 @@ class OHEditor:
     ) -> CLIResult:
         """
         Implement the str_replace command, which replaces old_str with new_str in the file content.
+        For large files, it uses a streaming approach to find occurrences and perform replacements.
         """
-        file_content = self.read_file(path).expandtabs()
         old_str = old_str.expandtabs()
         new_str = new_str.expandtabs() if new_str is not None else ''
 
-        # Check if old_str is unique in the file
-        occurrences = file_content.count(old_str)
-        if occurrences == 0:
+        # For small files, use the simpler approach
+        if path.stat().st_size < 1024 * 1024:  # 1MB
+            file_content = self.read_file(path).expandtabs()
+            occurrences = file_content.count(old_str)
+            if occurrences == 0:
+                raise ToolError(
+                    f'No replacement was performed, old_str `{old_str}` did not appear verbatim in {path}.'
+                )
+            if occurrences > 1:
+                # Find starting line numbers for each occurrence
+                line_numbers = []
+                start_idx = 0
+                while True:
+                    idx = file_content.find(old_str, start_idx)
+                    if idx == -1:
+                        break
+                    line_num = file_content.count('\n', 0, idx) + 1
+                    line_numbers.append(line_num)
+                    start_idx = idx + 1
+                raise ToolError(
+                    f'No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {line_numbers}. Please ensure it is unique.'
+                )
+
+            new_file_content = file_content.replace(old_str, new_str)
+            self.write_file(path, new_file_content)
+            self._file_history[path].append(file_content)
+
+            # Create a snippet of the edited section
+            replacement_line = file_content.split(old_str)[0].count('\n')
+            start_line = max(0, replacement_line - SNIPPET_CONTEXT_WINDOW)
+            end_line = replacement_line + SNIPPET_CONTEXT_WINDOW + new_str.count('\n')
+            snippet = '\n'.join(new_file_content.split('\n')[start_line : end_line + 1])
+
+            success_message = f'The file {path} has been edited. '
+            success_message += self._make_output(
+                snippet, f'a snippet of {path}', start_line + 1
+            )
+
+            if enable_linting:
+                lint_results = self._run_linting(file_content, new_file_content, path)
+                success_message += '\n' + lint_results + '\n'
+
+            success_message += 'Review the changes and make sure they are as expected. Edit the file again if necessary.'
+            return CLIResult(
+                output=success_message,
+                prev_exist=True,
+                path=str(path),
+                old_content=file_content,
+                new_content=new_file_content,
+            )
+
+        # For large files, use a streaming approach to count occurrences
+        occurrences = []
+        current_chunk = []
+        chunk_start_line = 1
+        line_number = 1
+        
+        # Read the file in chunks of lines to handle matches that span multiple lines
+        with path.open() as f:
+            for line in f:
+                current_chunk.append(line)
+                if len(current_chunk) >= 1000:  # Process 1000 lines at a time
+                    chunk_text = ''.join(current_chunk).expandtabs()
+                    if old_str in chunk_text:
+                        # Count occurrences in this chunk
+                        start = 0
+                        while True:
+                            pos = chunk_text.find(old_str, start)
+                            if pos == -1:
+                                break
+                            # Calculate the line number for this occurrence
+                            line_in_chunk = chunk_text.count('\n', 0, pos) + 1
+                            occurrences.append(chunk_start_line + line_in_chunk - 1)
+                            start = pos + 1
+                    
+                    # Keep last few lines in case match spans across chunks
+                    overlap_lines = min(len(current_chunk), len(old_str.splitlines()) + 1)
+                    current_chunk = current_chunk[-overlap_lines:]
+                    chunk_start_line = line_number - len(current_chunk) + 1
+                line_number += 1
+            
+            # Process the last chunk
+            if current_chunk:
+                chunk_text = ''.join(current_chunk).expandtabs()
+                if old_str in chunk_text:
+                    start = 0
+                    while True:
+                        pos = chunk_text.find(old_str, start)
+                        if pos == -1:
+                            break
+                        line_in_chunk = chunk_text.count('\n', 0, pos) + 1
+                        occurrences.append(chunk_start_line + line_in_chunk - 1)
+                        start = pos + 1
+
+        if not occurrences:
             raise ToolError(
                 f'No replacement was performed, old_str `{old_str}` did not appear verbatim in {path}.'
             )
-        if occurrences > 1:
-            # Find starting line numbers for each occurrence
-            line_numbers = []
-            start_idx = 0
-            while True:
-                idx = file_content.find(old_str, start_idx)
-                if idx == -1:
-                    break
-                # Count newlines before this occurrence to get the line number
-                line_num = file_content.count('\n', 0, idx) + 1
-                line_numbers.append(line_num)
-                start_idx = idx + 1
+        if len(occurrences) > 1:
             raise ToolError(
-                f'No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {line_numbers}. Please ensure it is unique.'
+                f'No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {occurrences}. Please ensure it is unique.'
             )
 
-        # Replace old_str with new_str
+        # We found exactly one occurrence, now read the content around it
+        occurrence_line = occurrences[0]
+        start_line = max(1, occurrence_line - SNIPPET_CONTEXT_WINDOW)
+        end_line = occurrence_line + SNIPPET_CONTEXT_WINDOW + new_str.count('\n')
+        
+        # Read the content we need to modify
+        file_content = self.read_file(path, start_line, end_line).expandtabs()
         new_file_content = file_content.replace(old_str, new_str)
 
-        # Write the new content to the file
-        self.write_file(path, new_file_content)
-
-        # Save the content to history
-        self._file_history[path].append(file_content)
-
-        # Create a snippet of the edited section
-        replacement_line = file_content.split(old_str)[0].count('\n')
-        start_line = max(0, replacement_line - SNIPPET_CONTEXT_WINDOW)
-        end_line = replacement_line + SNIPPET_CONTEXT_WINDOW + new_str.count('\n')
-        snippet = '\n'.join(new_file_content.split('\n')[start_line : end_line + 1])
-
-        # Prepare the success message
-        success_message = f'The file {path} has been edited. '
-        success_message += self._make_output(
-            snippet, f'a snippet of {path}', start_line + 1
-        )
-
-        if enable_linting:
-            # Run linting on the changes
-            lint_results = self._run_linting(file_content, new_file_content, path)
-            success_message += '\n' + lint_results + '\n'
-
-        success_message += 'Review the changes and make sure they are as expected. Edit the file again if necessary.'
-        return CLIResult(
-            output=success_message,
-            prev_exist=True,
-            path=str(path),
-            old_content=file_content,
-            new_content=new_file_content,
-        )
+        # Now we need to write back the file
+        # Read the file in chunks and write the modified content in the right place
+        temp_file = path.with_suffix('.tmp')
+        try:
+            with path.open('r', newline='') as f_in, temp_file.open('w', newline='') as f_out:
+                # Copy lines before our modification
+                for _ in range(start_line - 1):
+                    line = f_in.readline()
+                    if not line:
+                        break
+                    f_out.write(line)
+                
+                # Write our modified content
+                # Ensure it ends with a newline if the original did
+                if new_file_content and not new_file_content.endswith('\n'):
+                    new_file_content += '\n'
+                f_out.write(new_file_content)
+                
+                # Skip the lines we modified
+                for _ in range(end_line - start_line + 1):
+                    if not f_in.readline():
+                        break
+                
+                # Copy the rest of the file
+                while True:
+                    line = f_in.readline()
+                    if not line:
+                        break
+                    f_out.write(line)
+            
+            # Save the original content to history (just the modified part)
+            self._file_history[path].append(file_content)
+            
+            # Replace the original file with our temporary file
+            temp_file.replace(path)
+            
+            success_message = f'The file {path} has been edited. '
+            success_message += self._make_output(
+                new_file_content, f'a snippet of {path}', start_line
+            )
+            
+            if enable_linting:
+                lint_results = self._run_linting(file_content, new_file_content, path)
+                success_message += '\n' + lint_results + '\n'
+            
+            success_message += 'Review the changes and make sure they are as expected. Edit the file again if necessary.'
+            return CLIResult(
+                output=success_message,
+                prev_exist=True,
+                path=str(path),
+                old_content=file_content,
+                new_content=new_file_content,
+            )
+        finally:
+            if temp_file.exists():
+                temp_file.unlink()
 
     def view(self, path: Path, view_range: list[int] | None = None) -> CLIResult:
         """
@@ -204,11 +316,10 @@ class OHEditor:
                 prev_exist=True,
             )
 
-        file_content = self.read_file(path)
-        start_line = 1
         if not view_range:
+            file_content = self.read_file(path)
             return CLIResult(
-                output=self._make_output(file_content, str(path), start_line),
+                output=self._make_output(file_content, str(path), 1),
                 path=str(path),
                 prev_exist=True,
             )
@@ -220,21 +331,12 @@ class OHEditor:
                 'It should be a list of two integers.',
             )
 
-        file_content_lines = file_content.split('\n')
-        num_lines = len(file_content_lines)
         start_line, end_line = view_range
-        if start_line < 1 or start_line > num_lines:
+        if start_line < 1:
             raise EditorToolParameterInvalidError(
                 'view_range',
                 view_range,
-                f'Its first element `{start_line}` should be within the range of lines of the file: {[1, num_lines]}.',
-            )
-
-        if end_line > num_lines:
-            raise EditorToolParameterInvalidError(
-                'view_range',
-                view_range,
-                f'Its second element `{end_line}` should be smaller than the number of lines in the file: `{num_lines}`.',
+                'Its first element should be greater than or equal to 1.',
             )
 
         if end_line != -1 and end_line < start_line:
@@ -244,10 +346,8 @@ class OHEditor:
                 f'Its second element `{end_line}` should be greater than or equal to the first element `{start_line}`.',
             )
 
-        if end_line == -1:
-            file_content = '\n'.join(file_content_lines[start_line - 1 :])
-        else:
-            file_content = '\n'.join(file_content_lines[start_line - 1 : end_line])
+        # Get the content for the requested range
+        file_content = self.read_file(path, start_line, end_line if end_line != -1 else None)
         return CLIResult(
             path=str(path),
             output=self._make_output(file_content, str(path), start_line),
@@ -378,12 +478,34 @@ class OHEditor:
             new_content=old_text,
         )
 
-    def read_file(self, path: Path) -> str:
+    def read_file(self, path: Path, start_line: int = None, end_line: int = None) -> str:
         """
         Read the content of a file from a given path; raise a ToolError if an error occurs.
+        If start_line and end_line are provided, only read those lines.
         """
         try:
-            return path.read_text()
+            if start_line is None and end_line is None:
+                # For small files or when we need the whole content, read all at once
+                if path.stat().st_size < 1024 * 1024:  # 1MB
+                    return path.read_text()
+                
+                # For large files, read line by line
+                content = []
+                with path.open() as f:
+                    for line in f:
+                        content.append(line.rstrip('\n'))
+                return '\n'.join(content)
+            else:
+                # Read specific lines
+                content = []
+                with path.open() as f:
+                    for i, line in enumerate(f, 1):
+                        if start_line and i < start_line:
+                            continue
+                        if end_line and i > end_line:
+                            break
+                        content.append(line.rstrip('\n'))
+                return '\n'.join(content)
         except Exception as e:
             raise ToolError(f'Ran into {e} while trying to read {path}') from None
 
