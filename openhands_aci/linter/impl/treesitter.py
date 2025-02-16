@@ -2,9 +2,10 @@ import warnings
 
 from grep_ast import TreeContext, filename_to_lang
 from grep_ast.parsers import PARSERS
-from tree_sitter_languages import get_parser
+from tree_sitter_languages import get_parser as get_parser_legacy
 
 from ..base import BaseLinter, LintResult
+from .treesitter_compat import get_parser as get_parser_new
 
 # tree_sitter is throwing a FutureWarning
 warnings.simplefilter('ignore', category=FutureWarning)
@@ -56,7 +57,13 @@ class TreesitterBasicLinter(BaseLinter):
         lang = filename_to_lang(file_path)
         if not lang:
             return []
-        parser = get_parser(lang)
+        # Try to get parser from language-specific package first
+        try:
+            parser = get_parser_new(lang)
+        except (ImportError, ValueError):
+            # Fallback to tree-sitter-languages
+            parser = get_parser_legacy(lang)
+
         with open(file_path, 'r') as f:
             code = f.read()
         tree = parser.parse(bytes(code, 'utf-8'))
